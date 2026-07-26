@@ -1,0 +1,28 @@
+name: Validate Apps Script
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate JavaScript syntax
+        run: cp Code.gs /tmp/Code.js && node --check /tmp/Code.js
+      - name: Validate manifest JSON
+        run: node -e "JSON.parse(require('fs').readFileSync('appsscript.json','utf8'))"
+      - name: Reject committed secrets
+        run: |
+          if grep -RIE --exclude-dir=.git --exclude='validate.yml' 'sk-(proj-)?[A-Za-z0-9_-]{20,}' .; then
+            echo 'Potential API key detected.'
+            exit 1
+          fi
