@@ -1,0 +1,17 @@
+# Credentials and local tooling
+.clasp.json
+.clasprc.json
+.env
+.env.*
+*.key
+*.pem
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node tooling
+node_modules/
+coverage/
