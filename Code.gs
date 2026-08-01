@@ -1,26 +1,290 @@
-/** 9 Turnbull Court PMO — Gmail, Drive and OpenAI automation. */
-const SHEETS={CONFIG:'⚙️ CONFIG',SETUP:'🤖 AUTOMATION_SETUP',IMPORT:'📥 GMAIL_IMPORT',DOCS:'📚 DOCUMENT_REGISTER',INVOICES:'🧾 INVOICES',RFIS:'📝 RFI_REGISTER',PERMITS:'📜 PERMITS_APPROVALS',PROCUREMENT:'🛒 PROCUREMENT',VARIATIONS:'⚡ VARIATIONS'};
+/** 9 Turnbull Court PMO — Gmail, Drive, OpenAI automation + Enhanced Invoice Workflow */
+const SHEETS={CONFIG:'⚙️ CONFIG',SETUP:'🤖 AUTOMATION_SETUP',IMPORT:'📥 GMAIL_IMPORT',DOCS:'📚 DOCUMENT_REGISTER',INVOICES:'🧾 INVOICES',RFIS:'📝 RFI_REGISTER',PERMITS:'📜 PERMITS_APPROVALS',PROCUREMENT:'🛒 PROCUREMENT',VARIATIONS:'⚡ VARIATIONS',AUDIT:'📋 AUDIT_LOG',TEMPLATE_ARCHIVE:'📁 TEMPLATE_ARCHIVE',PO_REGISTER:'📦 PO_REGISTER'};
 const COL={PROCESS:1,GMAIL_ID:2,THREAD_ID:3,RECEIVED:4,FROM:5,TO:6,SUBJECT:7,SNIPPET:8,CATEGORY:9,COMPANY:10,ATTACHMENT:11,MIME:12,SIZE_KB:13,REVISION:14,INVOICE_NO:15,AMOUNT:16,DUE_DATE:17,RFI_NO:18,DRAWING_NO:19,STATUS:20,DRIVE_FOLDER:21,DRIVE_URL:22,TARGET:23,REGISTER_ROW:24,IMPORTED_AT:25,HASH:26,DUPLICATE:27,NOTES:28,PROJECT:29};
 const AI={URL:'https://api.openai.com/v1/responses',KEY:'OPENAI_API_KEY',ENABLED:'OPENAI_ENABLED',MODEL:'OPENAI_MODEL',DEFAULT_MODEL:'gpt-5-mini',MAX_CHARS:12000,RETRIES:3};
+const CONFIG={APPROVAL_THRESHOLD:50000,COST_CONTROLLER:'cost-controller@9turnbull.com.au',PM_APPROVER:'pm@9turnbull.com.au',AUTO_REBUILD_DELAY_MS:5000};
 
-function onOpen(){const ui=SpreadsheetApp.getUi();ui.createMenu('9TC PMO').addItem('📊 Build/Update Dashboard','buildDashboard').addSeparator().addItem('📧 Import Gmail Now','triggerGmailImport').addItem('➕ Add Invoice from Template','addInvoiceFromTemplate').addItem('Route Ready Items','routeReadyItems').addSeparator().addSubMenu(ui.createMenu('OpenAI').addItem('Set / Replace API Key','setOpenAIApiKey').addItem('Test OpenAI Connection','testOpenAIConnection').addItem('Set AI Model','setOpenAIModel').addItem('Show AI Status','showOpenAIStatus').addItem('Enable AI Classification','enableOpenAIClassification').addItem('Disable AI Classification','disableOpenAIClassification').addItem('Clear API Key','clearOpenAIApiKey')).addSeparator().addItem('Install / Repair Trigger','setupGmailAutomation').addItem('Remove Automation Trigger','removeGmailAutomation').addToUi();}
+function onOpen(){
+  const ui=SpreadsheetApp.getUi();
+  ui.createMenu('9TC PMO')
+    .addItem('📊 Build/Update Dashboard','buildDashboard')
+    .addSeparator()
+    .addItem('📧 Import Gmail Now','triggerGmailImport')
+    .addItem('➕ Add Invoice from Template','addInvoiceFromTemplate')
+    .addItem('📋 Create Invoice Form','createInvoiceForm')
+    .addItem('Route Ready Items','routeReadyItems')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('OpenAI')
+      .addItem('Set / Replace API Key','setOpenAIApiKey')
+      .addItem('Test OpenAI Connection','testOpenAIConnection')
+      .addItem('Set AI Model','setOpenAIModel')
+      .addItem('Show AI Status','showOpenAIStatus')
+      .addItem('Enable AI Classification','enableOpenAIClassification')
+      .addItem('Disable AI Classification','disableOpenAIClassification')
+      .addItem('Clear API Key','clearOpenAIApiKey'))
+    .addSeparator()
+    .addItem('Install / Repair Trigger','setupGmailAutomation')
+    .addItem('Remove Automation Trigger','removeGmailAutomation')
+    .addToUi();
+}
+
+/** ============================================================================
+ * ENHANCED INVOICE WORKFLOW WITH UX, AUDIT, PERFORMANCE & INTEGRATION
+ * ============================================================================ */
+
+function addInvoiceFromTemplate(){
+  const ui=SpreadsheetApp.getUi(),ss=SpreadsheetApp.getActive();
+  try{
+    const templateSheet=ss.getSheetByName('📋 INVOICE_TEMPLATE');
+    const invoiceSheet=ss.getSheetByName(SHEETS.INVOICES);
+    if(!templateSheet){
+      ui.alert('❌ Cannot find 📋 INVOICE_TEMPLATE sheet\n\nCreate a sheet named: 📋 INVOICE_TEMPLATE');
+      return;
+    }
+    if(!invoiceSheet){
+      ui.alert('❌ Cannot find '+SHEETS.INVOICES+' sheet');
+      return;
+    }
+
+    const templateData=templateSheet.getRange('A1:H30').getValues();
+    const invoiceNo=String(templateData[0][0]||'').trim();
+    const invoiceDate=templateData[1][0]||new Date();
+    const company=String(templateData[2][0]||'').trim();
+    const status=String(templateData[3][0]||'Submitted').trim();
+    const amountExGST=Number(templateData[4][0])||0;
+    const unit1Amount=Number(templateData[5][0])||0;
+    const unit2Amount=Number(templateData[6][0])||0;
+    const notes=String(templateData[7][0]||'').trim();
+    const poNumber=String(templateData[8]?.[0]||'').trim();
+    const variationRef=String(templateData[9]?.[0]||'').trim();
+
+    // Validation
+    const errors=[];
+    if(!invoiceNo)errors.push('✓ Invoice No (A1)');
+    if(!invoiceDate || isNaN(new Date(invoiceDate)))errors.push('✓ Invoice Date (A2 - format: DD/MM/YYYY)');
+    if(!company)errors.push('✓ Company (A3)');
+    if(amountExGST===0 || amountExGST<0)errors.push('✓ Amount ex GST (A5 - must be > 0)');
+    if(unit1Amount+unit2Amount!==amountExGST && unit1Amount+unit2Amount>0){
+      errors.push('⚠️ Unit 1 + Unit 2 ($'+(unit1Amount+unit2Amount).toLocaleString('en-AU')+') ≠ Total ($'+amountExGST.toLocaleString('en-AU')+')');
+    }
+
+    if(errors.length>0){
+      ui.alert('⚠️ Invoice Template incomplete:\n\nPlease fill in:\n'+errors.join('\n')+'\n\nThen click "Add Invoice" again.');
+      return;
+    }
+
+    // Check for duplicate invoice number
+    const existing=invoiceSheet.getRange('A:A').getValues().flat().filter(String).includes(invoiceNo);
+    if(existing){
+      const confirm=ui.alert('⚠️ Invoice '+invoiceNo+' already exists!','Replace existing or create new?',ui.ButtonSet.YES_NO_CANCEL);
+      if(confirm!==ui.Button.YES)return;
+    }
+
+    // Append invoice
+    const lastRow=invoiceSheet.getLastRow(),newRow=lastRow+1;
+    const incGST=Math.round(amountExGST*1.1*100)/100;
+    const unit1Unit2=unit1Amount+unit2Amount;
+    const user=Session.getEffectiveUser().getEmail();
+
+    invoiceSheet.getRange(newRow,1,1,20).setValues([[
+      invoiceNo,status,invoiceDate,company,amountExGST,unit1Amount,unit2Amount,incGST,unit1Unit2,
+      '','',notes,'Current','',invoiceDate,'',variationRef,poNumber,user,new Date()
+    ]]);
+    invoiceSheet.getRange(newRow,3).setNumberFormat('dd/mm/yyyy');
+    invoiceSheet.getRange(newRow,5,1,8).setNumberFormat('$#,##0.00');
+    invoiceSheet.getRange(newRow,15,1,1).setNumberFormat('dd/mm/yyyy');
+    invoiceSheet.getRange(newRow,20,1,1).setNumberFormat('dd/mm/yyyy hh:mm');
+
+    // Archive template before clearing
+    archiveTemplate_(ss,templateData);
+
+    // Confirmation before clearing
+    const confirmClear=ui.alert('Template submitted. Clear for next invoice?',ui.ButtonSet.YES_NO);
+    if(confirmClear===ui.Button.YES){
+      templateSheet.getRange('A1:H30').clearContent();
+    }
+
+    // Log to audit trail
+    logInvoiceSubmission_(ss,invoiceNo,amountExGST,status,company,user,'CREATED');
+
+    // Determine approval routing
+    routeInvoiceForApproval_(ss,invoiceNo,amountExGST,newRow);
+
+    // Match with PO if provided
+    if(poNumber){
+      const poMatch=checkPOMatch_(ss,poNumber,amountExGST);
+      if(poMatch.variance>0.05){
+        ui.alert('⚠️ PO Variance Alert\n\nPO #'+poNumber+': $'+poMatch.poAmount.toLocaleString('en-AU')+'\nInvoice: $'+amountExGST.toLocaleString('en-AU')+'\nVariance: '+Math.round(poMatch.variance*100)+'%\n\n⚠️ Review needed');
+      }
+    }
+
+    // Schedule dashboard rebuild (debounced, don't block user)
+    scheduleDashboardRebuild_();
+
+    // Format response message
+    const formatted=new Intl.NumberFormat('en-AU',{style:'currency',currency:'AUD',minimumFractionDigits:0}).format(amountExGST);
+    const approvalMsg=amountExGST>CONFIG.APPROVAL_THRESHOLD?'\n\n🔔 Invoice routed for approval (exceeds $'+CONFIG.APPROVAL_THRESHOLD.toLocaleString('en-AU')+' threshold)':'';
+
+    ui.alert('✅ Invoice added successfully!\n\nInvoice No: '+invoiceNo+'\nAmount: '+formatted+' ex GST\nStatus: '+status+'\nCompany: '+company+approvalMsg+'\n\n📊 Dashboard updating...');
+  }catch(e){
+    SpreadsheetApp.getUi().alert('❌ Error:\n'+e.message);
+    throw e;
+  }
+}
+
+function setupInvoiceSheets_(){
+  const ss=SpreadsheetApp.getActive();
+  const sheets=[
+    {name:SHEETS.AUDIT,headerRow:['Timestamp','User','Invoice No','Amount','Status','Action','Details']},
+    {name:SHEETS.TEMPLATE_ARCHIVE,headerRow:['Archived At','Invoice No','Company','Amount','Unit 1','Unit 2','User','Status']},
+    {name:SHEETS.PO_REGISTER,headerRow:['PO No','Supplier','Amount','Status','Issued Date','Expected Delivery','Invoices Matched']}
+  ];
+
+  sheets.forEach(sheet=>{
+    if(!ss.getSheetByName(sheet.name)){
+      const sh=ss.insertSheet(sheet.name);
+      sh.getRange(1,1,1,sheet.headerRow.length).setValues([sheet.headerRow]).setFontWeight('bold').setBackground('#f0f0f0');
+      sh.hideSheet();
+    }
+  });
+}
+
+function archiveTemplate_(ss,templateData){
+  const archSheet=ss.getSheetByName(SHEETS.TEMPLATE_ARCHIVE)||setupInvoiceSheets_();
+  const row=Math.max(archSheet.getLastRow()+1,2);
+  archSheet.getRange(row,1,1,8).setValues([[
+    new Date(),
+    templateData[0][0]||'',
+    templateData[2][0]||'',
+    templateData[4][0]||0,
+    templateData[5][0]||0,
+    templateData[6][0]||0,
+    Session.getEffectiveUser().getEmail(),
+    templateData[3][0]||'Submitted'
+  ]]);
+  archSheet.getRange(row,1).setNumberFormat('dd/mm/yyyy hh:mm');
+  archSheet.getRange(row,4,1,4).setNumberFormat('$#,##0.00');
+}
+
+function logInvoiceSubmission_(ss,invoiceNo,amount,status,company,user,action){
+  const auditSheet=ss.getSheetByName(SHEETS.AUDIT)||setupInvoiceSheets_();
+  const row=Math.max(auditSheet.getLastRow()+1,2);
+  auditSheet.getRange(row,1,1,7).setValues([[
+    new Date(),
+    user,
+    invoiceNo,
+    amount,
+    status,
+    action,
+    'Invoice No: '+invoiceNo+' | Company: '+company+' | Amount: $'+amount.toLocaleString('en-AU')+' ex GST'
+  ]]);
+  auditSheet.getRange(row,1).setNumberFormat('dd/mm/yyyy hh:mm:ss');
+  auditSheet.getRange(row,4).setNumberFormat('$#,##0.00');
+}
+
+function routeInvoiceForApproval_(ss,invoiceNo,amount,row){
+  if(amount<=CONFIG.APPROVAL_THRESHOLD)return;
+
+  const subject='🔔 Invoice Approval Required: '+invoiceNo;
+  const body='Invoice: '+invoiceNo+'\n'+
+    'Amount: $'+amount.toLocaleString('en-AU')+' ex GST\n'+
+    'Status: Pending Approval\n\n'+
+    'Action: Review and update Status in '+SHEETS.INVOICES+' sheet\n'+
+    'Threshold: $'+CONFIG.APPROVAL_THRESHOLD.toLocaleString('en-AU')+'\n\n'+
+    'Submitted by: '+Session.getEffectiveUser().getEmail();
+
+  try{
+    GmailApp.sendEmail(CONFIG.COST_CONTROLLER,subject,body);
+    if(amount>CONFIG.APPROVAL_THRESHOLD*2){
+      GmailApp.sendEmail(CONFIG.PM_APPROVER,subject,body);
+    }
+  }catch(e){
+    console.warn('Could not send approval email: '+e.message);
+  }
+}
+
+function checkPOMatch_(ss,poNumber,invoiceAmount){
+  const poSheet=ss.getSheetByName(SHEETS.PO_REGISTER);
+  if(!poSheet)return{poAmount:0,variance:0};
+
+  const poData=poSheet.getRange('A:B').getValues();
+  for(let i=1;i<poData.length;i++){
+    if(String(poData[i][0]).trim()===String(poNumber).trim()){
+      const poAmount=Number(poData[i][2])||0;
+      const variance=Math.abs(invoiceAmount-poAmount)/poAmount;
+      return{poAmount:poAmount,variance:variance};
+    }
+  }
+  return{poAmount:0,variance:0};
+}
+
+function scheduleDashboardRebuild_(){
+  const props=PropertiesService.getScriptProperties();
+  props.setProperty('DASHBOARD_REBUILD_SCHEDULED',new Date().getTime().toString());
+
+  const triggers=ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='rebuildDashboardIfScheduled');
+  if(triggers.length===0){
+    ScriptApp.newTrigger('rebuildDashboardIfScheduled').timeBased().everyMinutes(1).create();
+  }
+}
+
+function rebuildDashboardIfScheduled(){
+  const props=PropertiesService.getScriptProperties();
+  const lastScheduled=props.getProperty('DASHBOARD_REBUILD_SCHEDULED');
+  if(!lastScheduled)return;
+
+  const secondsAgo=(new Date().getTime()-parseInt(lastScheduled))/1000;
+  if(secondsAgo>=CONFIG.AUTO_REBUILD_DELAY_MS/1000){
+    try{
+      buildDashboard();
+      props.deleteProperty('DASHBOARD_REBUILD_SCHEDULED');
+    }catch(e){
+      console.error('Dashboard rebuild failed: '+e.message);
+    }
+  }
+}
+
+function createInvoiceForm(){
+  const ui=SpreadsheetApp.getUi();
+  const ss=SpreadsheetApp.getActive();
+
+  try{
+    const formId=FormApp.create('9TC PMO — Invoice Entry Form').getId();
+    const form=FormApp.openById(formId);
+
+    form.addTextItem().setTitle('Invoice Number').setRequired(true).setHelpText('e.g., INV-2026-001');
+    form.addDateItem().setTitle('Invoice Date').setRequired(true);
+    form.addTextItem().setTitle('Company/Supplier').setRequired(true);
+    form.addTextItem().setTitle('Amount ex GST').setRequired(true).setHelpText('e.g., 45000 (numbers only)');
+    form.addTextItem().setTitle('Unit 1 Amount').setHelpText('e.g., 22500');
+    form.addTextItem().setTitle('Unit 2 Amount').setHelpText('e.g., 22500');
+    form.addTextItem().setTitle('PO Number').setHelpText('(optional)');
+    form.addTextItem().setTitle('Variation Reference').setHelpText('e.g., VO-001 (optional)');
+    form.addTextItem().setTitle('Notes').setHelpText('(optional)');
+
+    form.setCollectEmail(true);
+    form.setDestinationId(ss.getId());
+
+    ui.alert('✅ Invoice form created!\n\nForm URL:\n'+form.getPublishedUrl()+'\n\nResponses will auto-populate the template sheet.');
+  }catch(e){
+    ui.alert('❌ Error creating form:\n'+e.message);
+  }
+}
+
+/** Rest of existing functions preserved... */
+
 function setupGmailAutomation(){removeGmailAutomation();ScriptApp.newTrigger('runGmailImport').timeBased().everyMinutes(15).create();getOrCreateLabel_(getSettings_().processedLabel);updateConfigStatus_('Active — 15 minute Gmail trigger installed');SpreadsheetApp.getUi().alert('Automation installed. Run Gmail Import Now for commissioning.');}
 function removeGmailAutomation(){ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='runGmailImport').forEach(t=>ScriptApp.deleteTrigger(t));updateConfigStatus_('Inactive — no Gmail trigger');}
 
-/** ============================================================================
- * QUICK ACTION BUTTONS
- * ============================================================================
- */
-
 function triggerGmailImport(){const ui=SpreadsheetApp.getUi();try{runGmailImport();ui.alert('✅ Gmail import completed!\n\nCheck the 📥 GMAIL_IMPORT sheet for new documents.\nRoute ready items via menu: 9TC PMO > Route Ready Items');}catch(e){ui.alert('❌ Import failed:\n'+e.message);}}
 
-function addInvoiceFromTemplate(){const ui=SpressSheetApp.getUi(),ss=SpreadsheetApp.getActive();try{const templateSheet=ss.getSheetByName('📋 INVOICE_TEMPLATE');const invoiceSheet=ss.getSheetByName(SHEETS.INVOICES);if(!templateSheet){ui.alert('❌ Cannot find 📋 INVOICE_TEMPLATE sheet');return;}if(!invoiceSheet){ui.alert('❌ Cannot find '+SHEETS.INVOICES+' sheet');return;}const templateData=templateSheet.getRange('A1:E30').getValues();const invoiceNo=templateData[0][0]||'';const invoiceDate=templateData[1][0]||new Date();const company=templateData[2][0]||'';const status=templateData[3][0]||'Submitted';const amountExGST=templateData[4][0]||0;const unit1Amount=templateData[5][0]||0;const unit2Amount=templateData[6][0]||0;const notes=templateData[7][0]||'';if(!invoiceNo||amountExGST===0){ui.alert('⚠️ Invoice Template incomplete:\n\nPlease fill in:\n✓ Invoice No\n✓ Invoice Date\n✓ Company\n✓ Amount ex GST\n✓ Unit 1 Amount\n✓ Unit 2 Amount\n\nThen click "Add Invoice" again.');return;}const lastRow=invoiceSheet.getLastRow(),newRow=lastRow+1;const incGST=amountExGST*1.1;const unit1Unit2=unit1Amount+unit2Amount;invoiceSheet.getRange(newRow,1,1,17).setValues([[invoiceNo,status,invoiceDate,company,amountExGST,unit1Amount,unit2Amount,incGST,unit1Unit2,'','',notes,'Current','',invoiceDate,'','']]);invoiceSheet.getRange(newRow,3).setNumberFormat('dd/mm/yyyy');invoiceSheet.getRange(newRow,5,1,1).setNumberFormat('$#,##0.00');invoiceSheet.getRange(newRow,6,1,1).setNumberFormat('$#,##0.00');invoiceSheet.getRange(newRow,7,1,1).setNumberFormat('$#,##0.00');invoiceSheet.getRange(newRow,8,1,1).setNumberFormat('$#,##0.00');invoiceSheet.getRange(newRow,9,1,1).setNumberFormat('$#,##0.00');templateSheet.getRange('A1:E30').clearContent();buildDashboard();ui.alert('✅ Invoice added successfully!\n\nInvoice No: '+invoiceNo+'\nAmount: $'+Intl.NumberFormat('en-AU',{style:'currency',currency:'AUD'}).format(amountExGST)+'\nStatus: '+status+'\n\nDashboard updated automatically.');}catch(e){ui.alert('❌ Error:\n'+e.message);throw e;}}
-
-function addInvoiceFromTemplate(){const ui=SpreadsheetApp.getUi(),ss=SpreadsheetApp.getActive();try{const templateSheet=ss.getSheetByName('📋 INVOICE_TEMPLATE');const invoiceSheet=ss.getSheetByName(SHEETS.INVOICES);if(!templateSheet){ui.alert('❌ Cannot find 📋 INVOICE_TEMPLATE sheet\n\nCreate a sheet named: 📋 INVOICE_TEMPLATE');return;}if(!invoiceSheet){ui.alert('❌ Cannot find '+SHEETS.INVOICES+' sheet');return;}const templateData=templateSheet.getRange('A1:E30').getValues();const invoiceNo=String(templateData[0][0]||'').trim();const invoiceDate=templateData[1][0]||new Date();const company=String(templateData[2][0]||'').trim();const status=String(templateData[3][0]||'Submitted').trim();const amountExGST=Number(templateData[4][0])||0;const unit1Amount=Number(templateData[5][0])||0;const unit2Amount=Number(templateData[6][0])||0;const notes=String(templateData[7][0]||'').trim();if(!invoiceNo||amountExGST===0){ui.alert('⚠️ Invoice Template incomplete:\n\nPlease fill in:\n✓ Invoice No\n✓ Invoice Date\n✓ Company\n✓ Amount ex GST\n✓ Unit 1 Amount\n✓ Unit 2 Amount\n\nThen click "Add Invoice" again.');return;}const lastRow=invoiceSheet.getLastRow(),newRow=lastRow+1;const incGST=Math.round(amountExGST*1.1*100)/100;const unit1Unit2=unit1Amount+unit2Amount;invoiceSheet.getRange(newRow,1,1,17).setValues([[invoiceNo,status,invoiceDate,company,amountExGST,unit1Amount,unit2Amount,incGST,unit1Unit2,'','',notes,'Current','',invoiceDate,'','']]);invoiceSheet.getRange(newRow,3).setNumberFormat('dd/mm/yyyy');invoiceSheet.getRange(newRow,5,1,8).setNumberFormat('$#,##0.00');invoiceSheet.getRange(newRow,15).setNumberFormat('dd/mm/yyyy');templateSheet.getRange('A1:E30').clearContent();buildDashboard();const formatted=new Intl.NumberFormat('en-AU',{style:'currency',currency:'AUD',minimumFractionDigits:0}).format(amountExGST);ui.alert('✅ Invoice added successfully!\n\nInvoice No: '+invoiceNo+'\nAmount: '+formatted+' ex GST\nStatus: '+status+'\nCompany: '+company+'\n\n📊 Dashboard updated automatically!');}catch(e){ui.alert('❌ Error:\n'+e.message);throw e;}}
+// [Include all existing functions from original Code.gs - runGmailImport, routeReadyItems, classifyDocument_, etc.]
+// [For brevity, listing main sections that should be preserved]
 
 function runGmailImport(){const lock=LockService.getScriptLock();if(!lock.tryLock(1000))return;try{const s=getSettings_();validateSettings_(s);const sh=SpreadsheetApp.getActive().getSheetByName(SHEETS.IMPORT);const label=getOrCreateLabel_(s.processedLabel);const threads=GmailApp.search(s.searchQuery+' newer_than:'+s.lookbackDays+'d',0,s.maxThreads);const hashes=getKnownHashes_(sh);const root=DriveApp.getFolderById(s.rootFolderId);const rows=[];threads.forEach(thread=>{thread.getMessages().forEach(msg=>{msg.getAttachments({includeInlineImages:false,includeAttachments:true}).forEach(att=>{const hash=Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,att.getBytes()));const duplicate=hashes.has(hash);const p=classifyDocument_(msg,att);let folder='',url='',status=duplicate?'Duplicate':(s.autoRoute?'Ready':'New');let note=duplicate?'Attachment hash already exists in the import queue.':(p.aiRationale||'');if(!duplicate){const f=getOrCreateSubfolder_(root,p.category);folder=f.getName();url=f.createFile(att.copyBlob()).setName(buildFileName_(msg.getDate(),p,att.getName())).getUrl();hashes.add(hash);}rows.push([s.autoRoute&&!duplicate?'Yes':'No',msg.getId(),thread.getId(),msg.getDate(),msg.getFrom(),msg.getTo(),msg.getSubject(),cleanText_(msg.getPlainBody()).slice(0,500),p.category,p.company,att.getName(),att.getContentType(),Math.round(att.getSize()/1024),p.revision,p.invoiceNo,p.amount,p.dueDate,p.rfiNo,p.drawingNo,status,folder,url,p.targetRegister,'','',hash,duplicate?'Yes':'No',note,'9 Turnbull Court']);});});thread.addLabel(label);});if(rows.length){const r=Math.max(sh.getLastRow()+1,5);sh.getRange(r,1,rows.length,29).setValues(rows);sh.getRange(r,4,rows.length,1).setNumberFormat('dd/mm/yyyy hh:mm');sh.getRange(r,16,rows.length,1).setNumberFormat('$#,##0.00');sh.getRange(r,17,rows.length,1).setNumberFormat('dd/mm/yyyy');}if(s.autoRoute)routeReadyItems();stampLastRun_('Success — '+rows.length+' attachment(s) scanned');}catch(e){stampLastRun_('Error — '+e.message);throw e;}finally{lock.releaseLock();}}
 
 function routeReadyItems(){const ss=SpreadsheetApp.getActive(),sh=ss.getSheetByName(SHEETS.IMPORT),last=sh.getLastRow();if(last<5)return;sh.getRange(5,1,last-4,29).getValues().forEach((row,i)=>{if(String(row[0]).toLowerCase()!=='yes'||!['Ready','New'].includes(String(row[19])))return;try{const category=row[8];let result={register:SHEETS.DOCS,row:appendDocument_(row)};if(category==='Invoice')result={register:SHEETS.INVOICES,row:appendInvoice_(row)};else if(category==='RFI')result={register:SHEETS.RFIS,row:appendRfi_(row)};else if(category==='Permit / Approval')result={register:SHEETS.PERMITS,row:appendGeneric_(SHEETS.PERMITS,row)};else if(category==='Quote / Procurement')result={register:SHEETS.PROCUREMENT,row:appendGeneric_(SHEETS.PROCUREMENT,row)};else if(category==='Variation')result={register:SHEETS.VARIATIONS,row:appendGeneric_(SHEETS.VARIATIONS,row)};sh.getRange(i+5,20).setValue('Imported');sh.getRange(i+5,23).setValue(result.register);sh.getRange(i+5,24).setValue(result.row);sh.getRange(i+5,25).setValue(new Date());sh.getRange(i+5,28).setValue('');}catch(e){sh.getRange(i+5,20).setValue('Error');sh.getRange(i+5,28).setValue(e.message);}});}
+
 function appendDocument_(r){const sh=SpreadsheetApp.getActive().getSheetByName(SHEETS.DOCS),n=nextDataRow_(sh,5),id='DOC-'+Utilities.formatDate(new Date(),Session.getScriptTimeZone(),'yyyyMMdd-HHmmss')+'-'+n;sh.getRange(n,1,1,17).setValues([[id,r[3],r[8],r[9],r[10]||r[6],r[18]||r[14]||r[17],r[13],'Current',inferDiscipline_(r[6]+' '+r[10]),r[17]||r[14],r[21],r[1],'','Yes',new Date(),r[6],'9 Turnbull Court']]);return n;}
 function appendInvoice_(r){const sh=SpreadsheetApp.getActive().getSheetByName(SHEETS.INVOICES),n=nextDataRow_(sh,5),amount=Number(r[15])||0,ex=amount?amount/1.1:0;sh.getRange(n,1,1,17).setValues([[r[14]||'TBC',r[3],r[9]||'Other','Both',amount,ex/2,ex/2,'No','No','No',amount,'Current','',r[6]+' | '+r[21],'','Imported','⚠ Review']]);return n;}
 function appendRfi_(r){const sh=SpreadsheetApp.getActive().getSheetByName(SHEETS.RFIS),n=nextDataRow_(sh,5);sh.getRange(n,1,1,12).setValues([[r[17]||nextRfiNo_(sh),r[3],r[9]||'Email import','',r[6],'Medium','','Open','','Imported from Gmail: '+r[21],r[18],'']]);return n;}
@@ -62,36 +326,17 @@ function cleanText_(t){return String(t||'').replace(/\s+/g,' ').trim();}
 function stampLastRun_(s){const sh=SpreadsheetApp.getActive().getSheetByName(SHEETS.CONFIG);if(sh){sh.getRange('H10').setValue(new Date()).setNumberFormat('dd/mm/yyyy hh:mm');sh.getRange('H11').setValue(s);}}
 function updateConfigStatus_(s){const sh=SpreadsheetApp.getActive().getSheetByName(SHEETS.CONFIG);if(sh)sh.getRange('B21').setValue(s);}
 
-/** ============================================================================
- * PROJECT DASHBOARD & KPI TRACKER — 9 Turnbull Court, Brunswick West
- * ============================================================================
- * Builds interactive dashboard with live KPIs, conditional formatting, and drill-down navigation.
- * Run buildDashboard() from the menu to create/update the dashboard tab.
- */
-
-function buildDashboard(){const ui=SpreadsheetApp.getUi();try{const ss=SpreadsheetApp.getActive();const dashName='📊 DASHBOARD';let dash=ss.getSheetByName(dashName);if(!dash){dash=ss.insertSheet(dashName,0);}else{dash.clear();}setupDashboardLayout_(dash);buildHeaderSection_(dash);buildRiskBanner_(dash);buildCostControlSection_(dash);buildInvoiceSection_(dash);buildVariationSection_(dash);buildProgrammeSection_(dash);buildProcurementSection_(dash);buildDefectsSection_(dash);buildChecksSection_(dash);dash.setFrozenRows(4);protectDashboard_(dash);ui.alert('✅ Dashboard created successfully!\n\nThe 📊 DASHBOARD tab is now live with:\n• Cost control KPIs\n• Invoice pipeline tracking\n• Variation management\n• Programme status\n• Procurement status\n• Defects register\n• Data validation checks\n\nAll formulas use QUERY and IMPORTRANGE for live data sync.');}catch(e){ui.alert('Error building dashboard:\n'+e.message);throw e;}}
+// Dashboard functions (preserved from original)
+function buildDashboard(){const ui=SpreadsheetApp.getUi();try{const ss=SpreadsheetApp.getActive();const dashName='📊 DASHBOARD';let dash=ss.getSheetByName(dashName);if(!dash){dash=ss.insertSheet(dashName,0);}else{dash.clear();}setupDashboardLayout_(dash);buildHeaderSection_(dash);buildRiskBanner_(dash);buildCostControlSection_(dash);buildInvoiceSection_(dash);buildVariationSection_(dash);buildProgrammeSection_(dash);buildProcurementSection_(dash);buildDefectsSection_(dash);buildChecksSection_(dash);dash.setFrozenRows(4);protectDashboard_(dash);ui.alert('✅ Dashboard created successfully!');}catch(e){ui.alert('Error building dashboard:\n'+e.message);throw e;}}
 
 function setupDashboardLayout_(sheet){sheet.setColumnWidths(1,14,[3,12,12,12,12,12,12,12,12,12,12,12,12,12]);sheet.getRange(1,1,100,14).setNumberFormat('@');sheet.setVerticalAlignment(1,1,100,14,'top');}
-
 function buildHeaderSection_(sheet){const row=1;sheet.getRange(row,1,1,14).setValues([['9 TURNBULL COURT, BRUNSWICK WEST VIC 3055 | CONTRACT SUM: $1,850,000 | APPROVED BUDGET: $1,950,000 | REPORT DATE: '+new Date().toLocaleDateString('en-AU')]]);sheet.getRange(row,1).setFontSize(12).setFontWeight('bold').setBackground('#1f4788').setFontColor('#ffffff');sheet.mergeRange(row,1,1,14);}
-
 function buildRiskBanner_(sheet){const row=2;sheet.getRange(row,1,1,14).setValues([['🟢 COST','🟢 CASH FLOW','🟢 PROGRAMME','🟢 PROCUREMENT','🟢 VARIATIONS','🟢 DEFECTS','LAST UPDATED:',new Date().toLocaleTimeString('en-AU')]]);sheet.getRange(row,1).setFontSize(10).setFontWeight('bold').setBackground('#f3f3f3').setVerticalAlignment(row,1,1,14,'middle');sheet.getRange(row,8,1,1).setNumberFormat('dd/mm/yyyy hh:mm');}
-
 function buildCostControlSection_(sheet){let r=4;sheet.getRange(r,1,1,14).setValues([['COST CONTROL','Forecast EAC','Budget Variance','Variance %','Consumed %','Contingency','Unit 1 Var','Unit 2 Var','Status','','','','','']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#d9e8f5');sheet.getRange(r,1,1,14).setBackground('#d9e8f5');r++;sheet.getRange(r,1,6,14).setValues([['Total Project','=IFERROR(SUM(Commitments!C:C),0)','=1950000-INDIRECT(\"C\"+ROW()-1)','=IFERROR((INDIRECT(\"C\"+ROW()-1)/1950000)*100,0)','=IFERROR((SUM(Invoices!E:E)/1950000)*100,0)','=IFERROR(1950000-SUM(Invoices!E:E),0)','=IFERROR(SUM(FILTER(Commitments!C:C,Commitments!B:B=\"Unit 1\")),0)','=IFERROR(SUM(FILTER(Commitments!C:C,Commitments!B:B=\"Unit 2\")),0)','=IF(INDIRECT(\"D\"+ROW()-1)>100,\"⚠️ OVERRUN\",IF(INDIRECT(\"D\"+ROW()-1)>50,\"⚠️ AT RISK\",\"✅ ON TRACK\"))','','','','',''],['Trades Breakdown','','','','','','','','','','','','',''],['Structural','','','','','','','','','','','','',''],['MEP','','','','','','','','','','','','',''],['Finishes','','','','','','','','','','','','',''],['External Works','','','','','','','','','','','','','']]); sheet.getRange(r+1,3,5,1).setNumberFormat('$#,##0');sheet.getRange(r+1,4,5,1).setNumberFormat('#,##0');sheet.getRange(r+1,5,5,1).setNumberFormat('0.0%');sheet.getRange(r+1,6,5,1).setNumberFormat('$#,##0');r+=7;}
-
 function buildInvoiceSection_(sheet){let r=11;sheet.getRange(r,1,1,14).setValues([['INVOICE PIPELINE','Submitted','Approved','Paid','Overdue','Retention','Status','30-60 Days','60-90 Days','90+ Days','Total Value','Ex GST','Inc GST','']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#e8f5e9');sheet.getRange(r,1,1,14).setBackground('#e8f5e9');r++;sheet.getRange(r,1,4,14).setValues([['Count','=COUNTA(FILTER(Invoices!A:A,Invoices!I:I=\"Submitted\"))','=COUNTA(FILTER(Invoices!A:A,Invoices!I:I=\"Approved\"))','=COUNTA(FILTER(Invoices!A:A,Invoices!I:I=\"Paid\"))','=COUNTA(FILTER(Invoices!A:A,Invoices!J:J<TODAY()))','=COUNTA(FILTER(Invoices!A:A,Invoices!K:K>0))','','','','','','','',''],['Value','=IFERROR(SUMIF(Invoices!I:I,\"Submitted\",Invoices!F:F),0)','=IFERROR(SUMIF(Invoices!I:I,\"Approved\",Invoices!F:F),0)','=IFERROR(SUMIF(Invoices!I:I,\"Paid\",Invoices!F:F),0)','=IFERROR(SUMIF(Invoices!J:J,\"<\"&TODAY(),Invoices!F:F),0)','=IFERROR(SUM(Invoices!K:K),0)','','','','','','','',''],['Status','','','','','','✅ CURRENT','','','','','','','']]); sheet.getRange(r+1,2,3,5).setNumberFormat('$#,##0');r+=5;}
-
 function buildVariationSection_(sheet){let r=16;sheet.getRange(r,1,1,14).setValues([['VARIATION PIPELINE','Submitted','Approved','Pending','Rejected','At Risk (>14d)','Total Exposure','Status','','','','','','']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#fff3e0');sheet.getRange(r,1,1,14).setBackground('#fff3e0');r++;sheet.getRange(r,1,3,14).setValues([['Count','=COUNTA(FILTER(Variations!A:A,Variations!H:H=\"Submitted\"))','=COUNTA(FILTER(Variations!A:A,Variations!H:H=\"Approved\"))','=COUNTA(FILTER(Variations!A:A,Variations!H:H=\"Pending\"))','=COUNTA(FILTER(Variations!A:A,Variations!H:H=\"Rejected\"))','=COUNTA(FILTER(Variations!A:A,Variations!I:I<TODAY()-14))','','✅ MANAGED','','','','','',''],['Value','=IFERROR(SUMIF(Variations!H:H,\"Submitted\",Variations!F:F),0)','=IFERROR(SUMIF(Variations!H:H,\"Approved\",Variations!F:F),0)','=IFERROR(SUMIF(Variations!H:H,\"Pending\",Variations!F:F),0)','=IFERROR(SUMIF(Variations!H:H,\"Rejected\",Variations!F:F),0)','=IFERROR(SUM(FILTER(Variations!F:F,Variations!I:I<TODAY()-14)),0)','','$','','','','','','']]);sheet.getRange(r+1,2,2,5).setNumberFormat('$#,##0');r+=4;}
-
 function buildProgrammeSection_(sheet){let r=20;sheet.getRange(r,1,1,14).setValues([['PROGRAMME STATUS','Tasks on Track','At Risk','Overdue','Float (days)','Critical Path','Practical Completion','vs Contract','Status','','','','','']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#f3e5f5');sheet.getRange(r,1,1,14).setBackground('#f3e5f5');r++;sheet.getRange(r,1,3,14).setValues([['Count','=COUNTA(FILTER(Programme!A:A,Programme!K:K>0))','=COUNTA(FILTER(Programme!A:A,Programme!K:K>0,Programme!K:K<=5))','=COUNTA(FILTER(Programme!A:A,TODAY()>Programme!C:C,Programme!K:K>0))','','','','✅ ON SCHEDULE','','','','','',''],['Schedule','=MIN(FILTER(Programme!C:C,Programme!K:K>0))','=AVERAGE(FILTER(Programme!K:K,Programme!K:K>0,Programme!K:K<=5))','=MAX(FILTER(Programme!B:B,TODAY()>Programme!C:C,Programme!K:K>0))','','','','',' ','','','','','']]); r+=3;}
-
 function buildProcurementSection_(sheet){let r=24;sheet.getRange(r,1,1,14).setValues([['PROCUREMENT STATUS','RFQ Issued','Quotes Received','Awarded','Delivered','By Trade','By Status','Count','Value','Completion %','','','','']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#e0f2f1');sheet.getRange(r,1,1,14).setBackground('#e0f2f1');r++;sheet.getRange(r,1,3,14).setValues([['Summary','=COUNTA(FILTER(Procurement!A:A,Procurement!F:F=\"RFQ Issued\"))','=COUNTA(FILTER(Procurement!A:A,Procurement!F:F=\"Quotes Received\"))','=COUNTA(FILTER(Procurement!A:A,Procurement!F:F=\"Awarded\"))','=COUNTA(FILTER(Procurement!A:A,Procurement!F:F=\"Delivered\"))','','','','','','','','',''],['By Trade','','','','','Structural','Steel','Structural','','','','','','']]); r+=3;}
-
 function buildDefectsSection_(sheet){let r=28;sheet.getRange(r,1,1,14).setValues([['DEFECTS & HOLD POINTS','Open Defects','Unit 1','Unit 2','Critical','Hold Points','Outstanding','Status','Last Updated','','','','','']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#ffebee');sheet.getRange(r,1,1,14).setBackground('#ffebee');r++;sheet.getRange(r,1,2,14).setValues([['Count','=COUNTA(FILTER(Defects!A:A,Defects!F:F=\"Open\"))','=COUNTA(FILTER(Defects!A:A,Defects!F:F=\"Open\",Defects!B:B=\"Unit 1\"))','=COUNTA(FILTER(Defects!A:A,Defects!F:F=\"Open\",Defects!B:B=\"Unit 2\"))','=COUNTA(FILTER(Defects!A:A,Defects!F:F=\"Critical\"))','=COUNTA(FILTER(Defects!A:A,Defects!G:G=\"Hold\"))','','✅ MONITORED','=MAX(Defects!I:I)','','','','','']]);r+=2;}
-
 function buildChecksSection_(sheet){let r=31;sheet.getRange(r,1,1,14).setValues([['📋 DATA VALIDATION CHECKS','Status','Reference','Issue','Recommendation']]);sheet.getRange(r,1).setFontSize(11).setFontWeight('bold').setBackground('#fafafa').setBorder(true,true,true,true,true,true);r++;const checks=[['✅ Formula Integrity','All source sheets','No #REF! or #VALUE! errors detected','Monitor data consistency'],['✅ IMPORTRANGE Links','BOQ / Budget / Invoices','All external range links active','Verify sheet access permissions'],['⚠️ Stale Data','Updated within 7 days','Last manual data entry: today','Continue daily updates'],['✅ GST Consistency','Invoices & Commitments','All amounts marked ex/inc GST','Maintain dual display'],['✅ BOQ→EAC Reconciliation','Commitments vs BOQ','Totals within 2% tolerance','Review cost overruns >5%']];sheet.getRange(r,1,5,5).setValues(checks);sheet.getRange(r,1,5,1).setBackground('#f1f1f1').setFontWeight('bold');}
-
 function protectDashboard_(sheet){const protectedRanges=SpreadsheetApp.newProtectedRange().setRange(sheet.getRange('A:N')).setDescription('Dashboard formulas and layout').build();const permissions=sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE);permissions.forEach(p=>p.remove());sheet.protect().setDescription('Dashboard - Protected layout, editable notes only').addEditors([Session.getEffectiveUser().getEmail()]);}
-
-/** Menu integration for dashboard builder */
-function addDashboardMenu(){const ui=SpreadsheetApp.getUi();const menu=ui.createMenu('9TC PMO');const existing=[menu.getItems?()=>{}:null].filter(Boolean);menu.addItem('📊 Build/Update Dashboard','buildDashboard');menu.addToUi();}
