@@ -41,8 +41,8 @@ if(confirmClear===ui.Button.YES){
 **Structure:**
 ```
 Archived At | Invoice No | Company | Amount | Unit 1 | Unit 2 | User | Status
-2026-08-01  | INV-001    | Contractor ABC | $45,000 | $22,500 | $22,500 | user@gmail.com | Submitted
-2026-08-01  | INV-002    | Foundation Ltd | $89,500 | $45,000 | $44,500 | user@gmail.com | Submitted
+2026-08-01  | INV-001    | Contractor ABC | $45,000 | $22,500 | $22,500 | user@example.com | Submitted
+2026-08-01  | INV-002    | Foundation Ltd | $89,500 | $45,000 | $44,500 | user@example.com | Submitted
 ```
 
 **How to use:**
@@ -165,8 +165,8 @@ Timestamp           | User                 | Invoice No | Amount  | Status    | 
    ↓
 2. System checks: $89,500 > $50,000 threshold
    ↓
-3. Email sent to: cost-controller@9turnbull.com.au
-   ├─ If amount > $100k: ALSO email pm@9turnbull.com.au
+3. Email sent to: cost-controller@example.com
+   ├─ If amount > $100k: ALSO email pm@example.com
    ├─ Subject: "🔔 Invoice Approval Required: INV-001"
    └─ Body: Invoice details + action link
    ↓
@@ -188,8 +188,8 @@ Edit these lines in Code.gs:
 ```javascript
 const CONFIG={
   APPROVAL_THRESHOLD: 50000,              // $50k
-  COST_CONTROLLER: 'cost-controller@9turnbull.com.au',
-  PM_APPROVER: 'pm@9turnbull.com.au',
+  COST_CONTROLLER: 'cost-controller@example.com',
+  PM_APPROVER: 'pm@example.com',
 };
 ```
 
@@ -201,9 +201,9 @@ const CONFIG={
 
 | Column | Purpose | Example |
 |--------|---------|---------|
-| Submitted By | User email | finance@9turnbull.com.au |
+| Submitted By | User email | finance@example.com |
 | Date Submitted | Timestamp | 2026-08-01 10:15 |
-| Changed By | Who updated status | approver@9turnbull.com.au |
+| Changed By | Who updated status | approver@example.com |
 | Changed At | Timestamp | 2026-08-01 11:00 |
 
 **In Audit Log:** All changes are logged:
@@ -250,20 +250,52 @@ Dashboard rebuilds ONCE with all 2 invoices
 - 10 invoices in sequence: ~5 seconds (vs. 20-30 seconds previously)
 
 **Behind the scenes:**
+
+The system uses a debounced rebuild approach: when an invoice is added, the function schedules a rebuild and waits 5 seconds to collect any additional invoices before rebuilding once.
+
 ```javascript
 function scheduleDashboardRebuild_(){
-  PropertiesService.getScriptProperties()
-    .setProperty('DASHBOARD_REBUILD_SCHEDULED', new Date().getTime());
-  // Rebuild trigger fires after 5 seconds if scheduled
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const lastScheduled = scriptProperties.getProperty('DASHBOARD_REBUILD_SCHEDULED');
+  const now = new Date().getTime();
+  
+  // Set/update the scheduled time
+  scriptProperties.setProperty('DASHBOARD_REBUILD_SCHEDULED', now);
+  
+  // Install trigger if not already active (runs every 1 minute to check)
+  // Must be done once during setup or via onOpen()
+  if (!hasTimeBasedTrigger('rebuildDashboardIfScheduled')) {
+    ScriptApp.newTrigger('rebuildDashboardIfScheduled')
+      .timeBased()
+      .everyMinutes(1)
+      .create();
+  }
 }
 
 function rebuildDashboardIfScheduled(){
-  const secondsAgo = (Date.now() - lastScheduled) / 1000;
-  if(secondsAgo >= 5) buildDashboard(); // Batch all updates
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const lastScheduled = scriptProperties.getProperty('DASHBOARD_REBUILD_SCHEDULED');
+  
+  if (!lastScheduled) return; // Nothing scheduled
+  
+  const secondsAgo = (Date.now() - parseInt(lastScheduled)) / 1000;
+  if(secondsAgo >= 5) {
+    buildDashboard(); // Batch all updates
+    scriptProperties.deleteProperty('DASHBOARD_REBUILD_SCHEDULED');
+  }
+}
+
+function hasTimeBasedTrigger(functionName) {
+  const triggers = ScriptApp.getProjectTriggers();
+  return triggers.some(t => t.getHandlerFunction() === functionName);
 }
 ```
 
-**For users:** No action needed. Just submit invoices normally—dashboard updates automatically after a short delay.
+**Setup requirement:** This batching only works if the time-based trigger is installed. It can be set up:
+- **Option 1:** Call `scheduleDashboardRebuild_()` on first run via `onOpen()` function
+- **Option 2:** Manually in Apps Script Editor: **Triggers** (clock icon) → **Create new trigger** → Function: `rebuildDashboardIfScheduled`, Deployment: `Head`, Event source: `Time-driven`, Type: `Every minute`
+
+**For users:** No action needed. Just submit invoices normally—dashboard updates automatically after a short delay (5–60 seconds depending on trigger check interval).
 
 ---
 
@@ -276,7 +308,7 @@ function rebuildDashboardIfScheduled(){
 **Email Example:**
 
 ```
-To: cost-controller@9turnbull.com.au
+To: cost-controller@example.com
 Cc: (PM if invoice > $100k)
 
 Subject: 🔔 Invoice Approval Required: INV-2026-0847
@@ -292,7 +324,7 @@ Company: Foundation & Concrete Ltd
 Status: Pending Approval
 
 Action: Review and update Status in 🧾 INVOICES sheet
-        Submitted by: finance@9turnbull.com.au
+        Submitted by: finance@example.com
 
 Threshold: $50,000 (this invoice exceeds approval limit)
 ```
@@ -458,8 +490,8 @@ Edit in Code.gs (around line 5):
 ```javascript
 const CONFIG={
   APPROVAL_THRESHOLD: 50000,              // Amount in AUD
-  COST_CONTROLLER: 'cost-controller@9turnbull.com.au',
-  PM_APPROVER: 'pm@9turnbull.com.au',
+  COST_CONTROLLER: 'cost-controller@example.com',
+  PM_APPROVER: 'pm@example.com',
   AUTO_REBUILD_DELAY_MS: 5000             // 5 seconds
 };
 ```
@@ -527,7 +559,7 @@ Creates:
    • Checks threshold: $89,500 > $50,000
    • ROUTES FOR APPROVAL
 
-4. Email sent to: cost-controller@9turnbull.com.au
+4. Email sent to: cost-controller@example.com
    Subject: 🔔 Invoice Approval Required: INV-2026-0847
 
 5. Logs to audit trail:
@@ -545,7 +577,7 @@ Creates:
 
 8. Audit trail updates:
    Action: STATUS_CHANGE
-   Changed by: approver@9turnbull.com.au
+   Changed by: approver@example.com
    From: Submitted → Approved
 
 9. Dashboard automatically updates:

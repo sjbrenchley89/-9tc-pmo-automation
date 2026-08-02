@@ -37,6 +37,17 @@ Copy this exact layout into your template sheet:
 | A7 | **Unit 2 Amount** | 22500 | Amount allocated to Unit 2 |
 | A8 | **Notes** | Structural works | Optional notes/description |
 
+**Optional Fields for Advanced Features:**
+
+If you plan to use PO matching or variation tracking (described in ENHANCED_INVOICE_WORKFLOW.md), extend the template with additional cells:
+
+| Cell | Field | Example | Notes |
+|------|-------|---------|-------|
+| A9 | **PO Number** | PO-2026-001 | Links to PO Register for matching |
+| A10 | **Variation Ref** | VO-001 | Links invoice to change order |
+
+To add these fields, update your Apps Script's `addInvoiceFromTemplate()` function to read from A9 and A10, and update the `🧾 INVOICES` sheet to include `PO Number` and `Variation Reference` columns. Without these changes, the form will capture the data but it won't be processed by the matching/tracking logic.
+
 **Visual Layout:**
 
 ```
@@ -67,11 +78,14 @@ Copy this exact layout into your template sheet:
 
 1. **Column A:** Set width to 30
 2. **Column B:** Set width to 40
-3. Add a header in row 0 (optional):
-   ```
-   A0 = "INVOICE ENTRY TEMPLATE"
-   ```
-4. Make it visually distinct (light blue background for cells A1:A8)
+3. **(Optional) Add a header:** 
+   - **Option 1 (Recommended):** Put header text in cell **B1** (next to template fields)
+     - Keeps template fields at A1:A8 (no change to Apps Script code needed)
+   - **Option 2 (Advanced):** Insert a new row at the top and merge **A1:B1**, then type "INVOICE ENTRY TEMPLATE", then move template fields down to A2:A9
+     - ⚠️ **IMPORTANT:** You MUST update the Apps Script code to read from A2:A9 instead of A1:A8
+     - In `addInvoiceFromTemplate()`, change `getRange('A1')` to `getRange('A2')`, `getRange('A5')` to `getRange('A6')`, etc.
+     - Otherwise the script will interpret Invoice No as Date and shift all values, causing data corruption
+4. Make it visually distinct (light blue background for the template cells A1:A8 or A2:A9 if you added a header row)
 
 ---
 
