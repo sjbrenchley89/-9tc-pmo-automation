@@ -30,7 +30,8 @@ Confirm: Template submitted. Clear for next invoice?
 ```javascript
 const confirmClear=ui.alert('Template submitted. Clear for next invoice?',ui.ButtonSet.YES_NO);
 if(confirmClear===ui.Button.YES){
-  templateSheet.getRange('A1:H30').clearContent();
+  // Clear only the input fields (A1:A8), not headers or other cells
+  templateSheet.getRange('A1:A8').clearContent();
 }
 ```
 
